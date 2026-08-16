@@ -1,0 +1,6 @@
+{
+  "name": "Sports Operations",
+  "description": "Comprehensive Sports Department Operations Management System for managing events, tasks, readiness, calendar, issues, team, and approvals.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
