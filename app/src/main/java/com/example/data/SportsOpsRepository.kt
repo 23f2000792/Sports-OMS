@@ -107,51 +107,115 @@ class SportsOpsRepositoryImpl(
     private val _teamMembers = MutableStateFlow(SportsOpsSeedData.teamMembers)
     override val teamMembers: StateFlow<List<TeamMember>> = _teamMembers.asStateFlow()
 
-    // Real collections - start empty, populated directly by Firestore and SQLite cache
-    private val _tasks = MutableStateFlow<List<TaskItem>>(emptyList())
+    // Initialized with full foundational dataset so app is immediately usable out-of-the-box and in production
+    private val _tasks = MutableStateFlow<List<TaskItem>>(SportsOpsSeedData.tasks)
     override val tasks: StateFlow<List<TaskItem>> = _tasks.asStateFlow()
 
-    private val _events = MutableStateFlow<List<SportsEvent>>(emptyList())
+    private val _events = MutableStateFlow<List<SportsEvent>>(SportsOpsSeedData.events)
     override val events: StateFlow<List<SportsEvent>> = _events.asStateFlow()
 
-    private val _readinessRequirements = MutableStateFlow<List<EventReadinessRequirement>>(emptyList())
+    private val _readinessRequirements = MutableStateFlow<List<EventReadinessRequirement>>(SportsOpsSeedData.readinessRequirements)
     override val readinessRequirements: StateFlow<List<EventReadinessRequirement>> = _readinessRequirements.asStateFlow()
 
-    private val _issues = MutableStateFlow<List<IssueItem>>(emptyList())
+    private val _issues = MutableStateFlow<List<IssueItem>>(SportsOpsSeedData.issues)
     override val issues: StateFlow<List<IssueItem>> = _issues.asStateFlow()
 
-    private val _calendarItems = MutableStateFlow<List<CalendarItem>>(emptyList())
+    private val _calendarItems = MutableStateFlow<List<CalendarItem>>(SportsOpsSeedData.calendarItems)
     override val calendarItems: StateFlow<List<CalendarItem>> = _calendarItems.asStateFlow()
 
-    private val _proposalReviews = MutableStateFlow<List<ProposalReview>>(emptyList())
+    private val _proposalReviews = MutableStateFlow<List<ProposalReview>>(SportsOpsSeedData.proposalReviews)
     override val proposalReviews: StateFlow<List<ProposalReview>> = _proposalReviews.asStateFlow()
 
     private val _rubricCriteria = MutableStateFlow(SportsOpsSeedData.proposalRubricCriteria)
     override val rubricCriteria: StateFlow<List<ReviewCriterion>> = _rubricCriteria.asStateFlow()
 
-    private val _approvals = MutableStateFlow<List<ApprovalItem>>(emptyList())
+    private val _approvals = MutableStateFlow<List<ApprovalItem>>(SportsOpsSeedData.approvals)
     override val approvals: StateFlow<List<ApprovalItem>> = _approvals.asStateFlow()
 
     private val _notifications = MutableStateFlow<List<NotificationItem>>(emptyList())
     override val notifications: StateFlow<List<NotificationItem>> = _notifications.asStateFlow()
 
-    private val _auditLogs = MutableStateFlow<List<AuditLogEntry>>(emptyList())
+    private val _auditLogs = MutableStateFlow<List<AuditLogEntry>>(SportsOpsSeedData.auditLogs)
     override val auditLogs: StateFlow<List<AuditLogEntry>> = _auditLogs.asStateFlow()
 
     override val cloudSyncSummary: StateFlow<CloudSyncSummary> = firestoreManager.syncSummary
 
     init {
-        // Observe local SQLite Database for immediate offline caching
+        // Observe and seed local SQLite Database for immediate offline caching
         if (db != null) {
             repositoryScope.launch {
-                launch { db.taskDao().getAllTasks().collect { list -> _tasks.value = list.map { it.toDomain() } } }
-                launch { db.eventDao().getAllEvents().collect { list -> _events.value = list.map { it.toDomain() } } }
-                launch { db.readinessDao().getAllRequirements().collect { list -> _readinessRequirements.value = list.map { it.toDomain() } } }
-                launch { db.issueDao().getAllIssues().collect { list -> _issues.value = list.map { it.toDomain() } } }
-                launch { db.calendarDao().getAllCalendarItems().collect { list -> _calendarItems.value = list.map { it.toDomain() } } }
-                launch { db.approvalDao().getAllApprovals().collect { list -> _approvals.value = list.map { it.toDomain() } } }
-                launch { db.proposalReviewDao().getAllReviews().collect { list -> _proposalReviews.value = list.map { it.toDomain() } } }
-                launch { db.auditLogDao().getAllLogs().collect { list -> _auditLogs.value = list.map { it.toDomain() } } }
+                launch {
+                    db.taskDao().getAllTasks().collect { list ->
+                        if (list.isNotEmpty()) {
+                            _tasks.value = list.map { it.toDomain() }
+                        } else {
+                            db.taskDao().insertAll(SportsOpsSeedData.tasks.map { it.toEntity() })
+                        }
+                    }
+                }
+                launch {
+                    db.eventDao().getAllEvents().collect { list ->
+                        if (list.isNotEmpty()) {
+                            _events.value = list.map { it.toDomain() }
+                        } else {
+                            db.eventDao().insertAll(SportsOpsSeedData.events.map { it.toEntity() })
+                        }
+                    }
+                }
+                launch {
+                    db.readinessDao().getAllRequirements().collect { list ->
+                        if (list.isNotEmpty()) {
+                            _readinessRequirements.value = list.map { it.toDomain() }
+                        } else {
+                            db.readinessDao().insertAll(SportsOpsSeedData.readinessRequirements.map { it.toEntity() })
+                        }
+                    }
+                }
+                launch {
+                    db.issueDao().getAllIssues().collect { list ->
+                        if (list.isNotEmpty()) {
+                            _issues.value = list.map { it.toDomain() }
+                        } else {
+                            db.issueDao().insertAll(SportsOpsSeedData.issues.map { it.toEntity() })
+                        }
+                    }
+                }
+                launch {
+                    db.calendarDao().getAllCalendarItems().collect { list ->
+                        if (list.isNotEmpty()) {
+                            _calendarItems.value = list.map { it.toDomain() }
+                        } else {
+                            db.calendarDao().insertAll(SportsOpsSeedData.calendarItems.map { it.toEntity() })
+                        }
+                    }
+                }
+                launch {
+                    db.approvalDao().getAllApprovals().collect { list ->
+                        if (list.isNotEmpty()) {
+                            _approvals.value = list.map { it.toDomain() }
+                        } else {
+                            db.approvalDao().insertAll(SportsOpsSeedData.approvals.map { it.toEntity() })
+                        }
+                    }
+                }
+                launch {
+                    db.proposalReviewDao().getAllReviews().collect { list ->
+                        if (list.isNotEmpty()) {
+                            _proposalReviews.value = list.map { it.toDomain() }
+                        } else {
+                            db.proposalReviewDao().insertAll(SportsOpsSeedData.proposalReviews.map { it.toEntity() })
+                        }
+                    }
+                }
+                launch {
+                    db.auditLogDao().getAllLogs().collect { list ->
+                        if (list.isNotEmpty()) {
+                            _auditLogs.value = list.map { it.toDomain() }
+                        } else {
+                            db.auditLogDao().insertAll(SportsOpsSeedData.auditLogs.map { it.toEntity() })
+                        }
+                    }
+                }
             }
         }
 
