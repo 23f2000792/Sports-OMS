@@ -29,18 +29,27 @@ interface SportsOpsRepository {
     val notifications: StateFlow<List<NotificationItem>>
     val auditLogs: StateFlow<List<AuditLogEntry>>
     val cloudSyncSummary: StateFlow<CloudSyncSummary>
+    val isAuthenticated: StateFlow<Boolean>
 
+    fun login(user: CurrentUser)
+    fun loginWithCustomProfile(name: String, email: String, role: UserRole, vertical: String, phone: String)
+    fun registerNewTeamMember(member: TeamMember)
+    fun logout()
     fun switchUser(userId: String)
+    
     fun updateTaskStatus(taskId: String, newStatus: TaskStatus, progress: Int? = null, remark: String? = null)
     fun updateTaskProgress(taskId: String, newProgress: Int)
     fun addTaskBlocker(taskId: String, blockerText: String)
     fun clearTaskBlocker(taskId: String)
     fun addEvidenceToTask(taskId: String, attachment: EvidenceAttachment)
     fun createOrUpdateTask(task: TaskItem)
+    fun deleteTask(taskId: String)
     fun reassignTask(taskId: String, newAssigneeId: String)
     
     fun updateEventStage(eventId: String, newStage: EventStage)
     fun createOrUpdateEvent(event: SportsEvent)
+    fun deleteEvent(eventId: String)
+
     fun updateRequirementStatus(
         reqId: String,
         pocState: RequirementResponsibilityState? = null,
@@ -53,18 +62,23 @@ interface SportsOpsRepository {
     fun updateIssueStatus(issueId: String, newStatus: IssueStatus, resolution: String? = null)
     fun escalateIssue(issueId: String, targetUserId: String, reason: String)
     fun addEvidenceToIssue(issueId: String, attachment: EvidenceAttachment)
+    fun deleteIssue(issueId: String)
 
     fun submitProposalReview(review: ProposalReview)
 
     fun handleApprovalAction(approvalId: String, action: CoreApprovalStatus, remark: String)
+    fun deleteApproval(approvalId: String)
 
     fun addCalendarItem(item: CalendarItem)
+    fun deleteCalendarItem(calendarId: String)
 
     fun markNotificationAsRead(notificationId: String)
     fun markAllNotificationsAsRead()
 
     fun queryAiAssistant(prompt: String): String
 
+    fun clearAllData()
+    suspend fun seedOperationalFrameworkToFirestore(): Result<Int>
     suspend fun syncAllToFirestore(): Result<Int>
 }
 
@@ -76,7 +90,15 @@ class SportsOpsRepositoryImpl(
     private val db: AppDatabase? = context?.let { AppDatabase.getDatabase(it) }
     private val firestoreManager = FirestoreSyncManager(repositoryScope)
 
-    private val _currentUser = MutableStateFlow(SportsOpsSeedData.users[0])
+    private val prefs = context?.getSharedPreferences("sports_ops_prefs", Context.MODE_PRIVATE)
+    private val _isAuthenticated = MutableStateFlow(prefs?.getBoolean("is_authenticated", false) ?: false)
+    override val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
+
+    private val _currentUser = MutableStateFlow(
+        prefs?.getString("logged_user_id", null)?.let { savedId ->
+            SportsOpsSeedData.users.find { it.id == savedId }
+        } ?: SportsOpsSeedData.users[0]
+    )
     override val currentUser: StateFlow<CurrentUser> = _currentUser.asStateFlow()
 
     private val _allUsers = MutableStateFlow(SportsOpsSeedData.users)
@@ -85,127 +107,99 @@ class SportsOpsRepositoryImpl(
     private val _teamMembers = MutableStateFlow(SportsOpsSeedData.teamMembers)
     override val teamMembers: StateFlow<List<TeamMember>> = _teamMembers.asStateFlow()
 
-    private val _tasks = MutableStateFlow(SportsOpsSeedData.tasks)
+    // Real collections - start empty, populated directly by Firestore and SQLite cache
+    private val _tasks = MutableStateFlow<List<TaskItem>>(emptyList())
     override val tasks: StateFlow<List<TaskItem>> = _tasks.asStateFlow()
 
-    private val _events = MutableStateFlow(SportsOpsSeedData.events)
+    private val _events = MutableStateFlow<List<SportsEvent>>(emptyList())
     override val events: StateFlow<List<SportsEvent>> = _events.asStateFlow()
 
-    private val _readinessRequirements = MutableStateFlow(SportsOpsSeedData.readinessRequirements)
+    private val _readinessRequirements = MutableStateFlow<List<EventReadinessRequirement>>(emptyList())
     override val readinessRequirements: StateFlow<List<EventReadinessRequirement>> = _readinessRequirements.asStateFlow()
 
-    private val _issues = MutableStateFlow(SportsOpsSeedData.issues)
+    private val _issues = MutableStateFlow<List<IssueItem>>(emptyList())
     override val issues: StateFlow<List<IssueItem>> = _issues.asStateFlow()
 
-    private val _calendarItems = MutableStateFlow(SportsOpsSeedData.calendarItems)
+    private val _calendarItems = MutableStateFlow<List<CalendarItem>>(emptyList())
     override val calendarItems: StateFlow<List<CalendarItem>> = _calendarItems.asStateFlow()
 
-    private val _proposalReviews = MutableStateFlow(SportsOpsSeedData.proposalReviews)
+    private val _proposalReviews = MutableStateFlow<List<ProposalReview>>(emptyList())
     override val proposalReviews: StateFlow<List<ProposalReview>> = _proposalReviews.asStateFlow()
 
     private val _rubricCriteria = MutableStateFlow(SportsOpsSeedData.proposalRubricCriteria)
     override val rubricCriteria: StateFlow<List<ReviewCriterion>> = _rubricCriteria.asStateFlow()
 
-    private val _approvals = MutableStateFlow(SportsOpsSeedData.approvals)
+    private val _approvals = MutableStateFlow<List<ApprovalItem>>(emptyList())
     override val approvals: StateFlow<List<ApprovalItem>> = _approvals.asStateFlow()
 
-    private val _notifications = MutableStateFlow(SportsOpsSeedData.notifications)
+    private val _notifications = MutableStateFlow<List<NotificationItem>>(emptyList())
     override val notifications: StateFlow<List<NotificationItem>> = _notifications.asStateFlow()
 
-    private val _auditLogs = MutableStateFlow(SportsOpsSeedData.auditLogs)
+    private val _auditLogs = MutableStateFlow<List<AuditLogEntry>>(emptyList())
     override val auditLogs: StateFlow<List<AuditLogEntry>> = _auditLogs.asStateFlow()
 
     override val cloudSyncSummary: StateFlow<CloudSyncSummary> = firestoreManager.syncSummary
 
     init {
-        // Setup Room Database observations if context exists
+        // Observe local SQLite Database for immediate offline caching
         if (db != null) {
             repositoryScope.launch {
-                // Initialize seed data into database if empty
-                val existingTasks = db.taskDao().getAllTasks().firstOrNull() ?: emptyList()
-                if (existingTasks.isEmpty()) {
-                    db.taskDao().insertAll(SportsOpsSeedData.tasks.map { it.toEntity() })
-                    db.eventDao().insertAll(SportsOpsSeedData.events.map { it.toEntity() })
-                    db.readinessDao().insertAll(SportsOpsSeedData.readinessRequirements.map { it.toEntity() })
-                    db.issueDao().insertAll(SportsOpsSeedData.issues.map { it.toEntity() })
-                    db.calendarDao().insertAll(SportsOpsSeedData.calendarItems.map { it.toEntity() })
-                    db.approvalDao().insertAll(SportsOpsSeedData.approvals.map { it.toEntity() })
-                    db.proposalReviewDao().insertAll(SportsOpsSeedData.proposalReviews.map { it.toEntity() })
-                    db.auditLogDao().insertAll(SportsOpsSeedData.auditLogs.map { it.toEntity() })
-                }
-
-                // Collect from Room and update StateFlows
-                launch { db.taskDao().getAllTasks().collect { list -> if (list.isNotEmpty()) _tasks.value = list.map { it.toDomain() } } }
-                launch { db.eventDao().getAllEvents().collect { list -> if (list.isNotEmpty()) _events.value = list.map { it.toDomain() } } }
-                launch { db.readinessDao().getAllRequirements().collect { list -> if (list.isNotEmpty()) _readinessRequirements.value = list.map { it.toDomain() } } }
-                launch { db.issueDao().getAllIssues().collect { list -> if (list.isNotEmpty()) _issues.value = list.map { it.toDomain() } } }
-                launch { db.calendarDao().getAllCalendarItems().collect { list -> if (list.isNotEmpty()) _calendarItems.value = list.map { it.toDomain() } } }
-                launch { db.approvalDao().getAllApprovals().collect { list -> if (list.isNotEmpty()) _approvals.value = list.map { it.toDomain() } } }
-                launch { db.proposalReviewDao().getAllReviews().collect { list -> if (list.isNotEmpty()) _proposalReviews.value = list.map { it.toDomain() } } }
-                launch { db.auditLogDao().getAllLogs().collect { list -> if (list.isNotEmpty()) _auditLogs.value = list.map { it.toDomain() } } }
+                launch { db.taskDao().getAllTasks().collect { list -> _tasks.value = list.map { it.toDomain() } } }
+                launch { db.eventDao().getAllEvents().collect { list -> _events.value = list.map { it.toDomain() } } }
+                launch { db.readinessDao().getAllRequirements().collect { list -> _readinessRequirements.value = list.map { it.toDomain() } } }
+                launch { db.issueDao().getAllIssues().collect { list -> _issues.value = list.map { it.toDomain() } } }
+                launch { db.calendarDao().getAllCalendarItems().collect { list -> _calendarItems.value = list.map { it.toDomain() } } }
+                launch { db.approvalDao().getAllApprovals().collect { list -> _approvals.value = list.map { it.toDomain() } } }
+                launch { db.proposalReviewDao().getAllReviews().collect { list -> _proposalReviews.value = list.map { it.toDomain() } } }
+                launch { db.auditLogDao().getAllLogs().collect { list -> _auditLogs.value = list.map { it.toDomain() } } }
             }
         }
 
-        // Setup real-time listener from Firestore
+        // Setup live real-time listeners directly to Firebase Firestore Collections
         firestoreManager.setupRealtimeListeners(
             onTasksUpdated = { remoteTasks ->
-                if (remoteTasks.isNotEmpty()) {
-                    _tasks.value = remoteTasks
-                    db?.let { repositoryScope.launch { it.taskDao().insertAll(remoteTasks.map { t -> t.toEntity() }) } }
-                }
+                _tasks.value = remoteTasks
+                db?.let { repositoryScope.launch { it.taskDao().insertAll(remoteTasks.map { t -> t.toEntity() }) } }
             },
             onEventsUpdated = { remoteEvents ->
-                if (remoteEvents.isNotEmpty()) {
-                    _events.value = remoteEvents
-                    db?.let { repositoryScope.launch { it.eventDao().insertAll(remoteEvents.map { e -> e.toEntity() }) } }
-                }
+                _events.value = remoteEvents
+                db?.let { repositoryScope.launch { it.eventDao().insertAll(remoteEvents.map { e -> e.toEntity() }) } }
             },
             onReadinessUpdated = { remoteReqs ->
-                if (remoteReqs.isNotEmpty()) {
-                    _readinessRequirements.value = remoteReqs
-                    db?.let { repositoryScope.launch { it.readinessDao().insertAll(remoteReqs.map { r -> r.toEntity() }) } }
-                }
+                _readinessRequirements.value = remoteReqs
+                db?.let { repositoryScope.launch { it.readinessDao().insertAll(remoteReqs.map { r -> r.toEntity() }) } }
             },
             onIssuesUpdated = { remoteIssues ->
-                if (remoteIssues.isNotEmpty()) {
-                    _issues.value = remoteIssues
-                    db?.let { repositoryScope.launch { it.issueDao().insertAll(remoteIssues.map { i -> i.toEntity() }) } }
-                }
+                _issues.value = remoteIssues
+                db?.let { repositoryScope.launch { it.issueDao().insertAll(remoteIssues.map { i -> i.toEntity() }) } }
             },
             onCalendarUpdated = { remoteCal ->
-                if (remoteCal.isNotEmpty()) {
-                    _calendarItems.value = remoteCal
-                    db?.let { repositoryScope.launch { it.calendarDao().insertAll(remoteCal.map { c -> c.toEntity() }) } }
-                }
+                _calendarItems.value = remoteCal
+                db?.let { repositoryScope.launch { it.calendarDao().insertAll(remoteCal.map { c -> c.toEntity() }) } }
             },
             onApprovalsUpdated = { remoteApps ->
-                if (remoteApps.isNotEmpty()) {
-                    _approvals.value = remoteApps
-                    db?.let { repositoryScope.launch { it.approvalDao().insertAll(remoteApps.map { a -> a.toEntity() }) } }
-                }
+                _approvals.value = remoteApps
+                db?.let { repositoryScope.launch { it.approvalDao().insertAll(remoteApps.map { a -> a.toEntity() }) } }
             },
             onReviewsUpdated = { remoteRev ->
-                if (remoteRev.isNotEmpty()) {
-                    _proposalReviews.value = remoteRev
-                    db?.let { repositoryScope.launch { it.proposalReviewDao().insertAll(remoteRev.map { p -> p.toEntity() }) } }
-                }
+                _proposalReviews.value = remoteRev
+                db?.let { repositoryScope.launch { it.proposalReviewDao().insertAll(remoteRev.map { p -> p.toEntity() }) } }
             },
             onAuditLogsUpdated = { remoteLogs ->
-                if (remoteLogs.isNotEmpty()) {
-                    _auditLogs.value = remoteLogs
-                    db?.let { repositoryScope.launch { it.auditLogDao().insertAll(remoteLogs.map { l -> l.toEntity() }) } }
-                }
+                _auditLogs.value = remoteLogs
+                db?.let { repositoryScope.launch { it.auditLogDao().insertAll(remoteLogs.map { l -> l.toEntity() }) } }
             }
         )
     }
 
     private fun addAudit(objectType: String, objectId: String, action: String, details: String) {
         val user = _currentUser.value
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         val entry = AuditLogEntry(
             id = "LOG-${System.currentTimeMillis() % 100000}",
             user = user.name,
             userRole = user.role,
-            timestamp = "2026-08-16 12:00",
+            timestamp = now,
             objectType = objectType,
             objectId = objectId,
             action = action,
@@ -216,16 +210,72 @@ class SportsOpsRepositoryImpl(
         firestoreManager.syncAuditLog(entry)
     }
 
+    override fun login(user: CurrentUser) {
+        _currentUser.value = user
+        _isAuthenticated.value = true
+        prefs?.edit()?.putBoolean("is_authenticated", true)?.putString("logged_user_id", user.id)?.apply()
+        addAudit("Auth Session", user.id, "Logged In", "User ${user.name} (${user.role.displayName}) authenticated into operations platform.")
+    }
+
+    override fun loginWithCustomProfile(name: String, email: String, role: UserRole, vertical: String, phone: String) {
+        val newUserId = "USER-${System.currentTimeMillis() % 100000}"
+        val colors = listOf(0xFF1E3A8AL, 0xFF0D9488L, 0xFF7C3AEDL, 0xFFB45309L, 0xFFBE123CL, 0xFF047857L, 0xFF2563EBL)
+        val customUser = CurrentUser(
+            id = newUserId,
+            name = name,
+            email = email,
+            role = role,
+            vertical = vertical,
+            avatarColor = colors.random()
+        )
+        _allUsers.update { it + customUser }
+        val member = TeamMember(
+            id = newUserId,
+            name = name,
+            email = email,
+            phone = phone,
+            role = role,
+            vertical = vertical,
+            avatarColor = customUser.avatarColor
+        )
+        _teamMembers.update { it + member }
+        firestoreManager.syncTeamMember(member)
+        login(customUser)
+    }
+
+    override fun registerNewTeamMember(member: TeamMember) {
+        _teamMembers.update { it + member }
+        val newUser = CurrentUser(
+            id = member.id,
+            name = member.name,
+            email = member.email,
+            role = member.role,
+            vertical = member.vertical,
+            avatarColor = member.avatarColor
+        )
+        _allUsers.update { it + newUser }
+        firestoreManager.syncTeamMember(member)
+        addAudit("Team Management", member.id, "New Member Added", "Added ${member.name} (${member.role.displayName}) to ${member.vertical}")
+    }
+
+    override fun logout() {
+        _isAuthenticated.value = false
+        prefs?.edit()?.putBoolean("is_authenticated", false)?.apply()
+        addAudit("Auth Session", _currentUser.value.id, "Logged Out", "User ${_currentUser.value.name} logged out of workspace.")
+    }
+
     override fun switchUser(userId: String) {
         val found = _allUsers.value.find { it.id == userId }
         if (found != null) {
             _currentUser.value = found
+            prefs?.edit()?.putString("logged_user_id", found.id)?.apply()
             addAudit("User Session", userId, "Switched Role", "Switched active workspace session to ${found.name} (${found.role.displayName})")
         }
     }
 
     override fun updateTaskStatus(taskId: String, newStatus: TaskStatus, progress: Int?, remark: String?) {
         val user = _currentUser.value
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         var updatedTask: TaskItem? = null
         _tasks.update { list ->
             list.map { task ->
@@ -237,12 +287,12 @@ class SportsOpsRepositoryImpl(
                         newStatus == TaskStatus.IN_PROGRESS && task.progressPercent == 0 -> 20
                         else -> task.progressPercent
                     }
-                    val newCompletedOn = if (newStatus == TaskStatus.COMPLETED) "2026-08-16" else null
+                    val newCompletedOn = if (newStatus == TaskStatus.COMPLETED) now.substringBefore(" ") else null
                     val newActivity = TaskActivity(
                         id = "ACT-${System.currentTimeMillis() % 10000}",
                         user = user.name,
                         action = "Changed status from ${prevStatus.displayName} to ${newStatus.displayName}",
-                        timestamp = "2026-08-16 12:00",
+                        timestamp = now,
                         previousValue = prevStatus.displayName,
                         newValue = newStatus.displayName
                     )
@@ -252,7 +302,7 @@ class SportsOpsRepositoryImpl(
                         completedOn = newCompletedOn,
                         remarks = remark ?: task.remarks,
                         activityHistory = task.activityHistory + newActivity,
-                        lastUpdated = "2026-08-16 12:00"
+                        lastUpdated = now
                     )
                     updatedTask = mod
                     mod
@@ -268,6 +318,7 @@ class SportsOpsRepositoryImpl(
 
     override fun updateTaskProgress(taskId: String, newProgress: Int) {
         val user = _currentUser.value
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         val clamped = newProgress.coerceIn(0, 100)
         var updatedTask: TaskItem? = null
         _tasks.update { list ->
@@ -282,16 +333,16 @@ class SportsOpsRepositoryImpl(
                         id = "ACT-${System.currentTimeMillis() % 10000}",
                         user = user.name,
                         action = "Updated progress to $clamped%",
-                        timestamp = "2026-08-16 12:00",
+                        timestamp = now,
                         previousValue = "${task.progressPercent}%",
                         newValue = "$clamped%"
                     )
                     val mod = task.copy(
                         progressPercent = clamped,
                         status = newStatus,
-                        completedOn = if (clamped == 100) "2026-08-16" else null,
+                        completedOn = if (clamped == 100) now.substringBefore(" ") else task.completedOn,
                         activityHistory = task.activityHistory + newActivity,
-                        lastUpdated = "2026-08-16 12:00"
+                        lastUpdated = now
                     )
                     updatedTask = mod
                     mod
@@ -301,12 +352,13 @@ class SportsOpsRepositoryImpl(
         updatedTask?.let {
             db?.let { d -> repositoryScope.launch { d.taskDao().insertOrUpdate(it.toEntity()) } }
             firestoreManager.syncTask(it)
-            addAudit("Task", taskId, "Progress Update", "${user.name} set progress to $clamped%")
+            addAudit("Task", taskId, "Progress Update", "${user.name} updated progress to $clamped%")
         }
     }
 
     override fun addTaskBlocker(taskId: String, blockerText: String) {
         val user = _currentUser.value
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         var updatedTask: TaskItem? = null
         _tasks.update { list ->
             list.map { task ->
@@ -314,14 +366,14 @@ class SportsOpsRepositoryImpl(
                     val newActivity = TaskActivity(
                         id = "ACT-${System.currentTimeMillis() % 10000}",
                         user = user.name,
-                        action = "Added Blocker: $blockerText",
-                        timestamp = "2026-08-16 12:00"
+                        action = "Reported Blocker: $blockerText",
+                        timestamp = now
                     )
                     val mod = task.copy(
-                        status = TaskStatus.BLOCKED,
                         blocker = blockerText,
+                        status = TaskStatus.BLOCKED,
                         activityHistory = task.activityHistory + newActivity,
-                        lastUpdated = "2026-08-16 12:00"
+                        lastUpdated = now
                     )
                     updatedTask = mod
                     mod
@@ -331,12 +383,13 @@ class SportsOpsRepositoryImpl(
         updatedTask?.let {
             db?.let { d -> repositoryScope.launch { d.taskDao().insertOrUpdate(it.toEntity()) } }
             firestoreManager.syncTask(it)
-            addAudit("Task", taskId, "Blocker Added", "${user.name} flagged blocker: $blockerText")
+            addAudit("Task", taskId, "Blocker Reported", "Critical blocker logged by ${user.name}: $blockerText")
         }
     }
 
     override fun clearTaskBlocker(taskId: String) {
         val user = _currentUser.value
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         var updatedTask: TaskItem? = null
         _tasks.update { list ->
             list.map { task ->
@@ -344,14 +397,14 @@ class SportsOpsRepositoryImpl(
                     val newActivity = TaskActivity(
                         id = "ACT-${System.currentTimeMillis() % 10000}",
                         user = user.name,
-                        action = "Cleared blocker",
-                        timestamp = "2026-08-16 12:00"
+                        action = "Cleared Blocker: ${task.blocker ?: ""}",
+                        timestamp = now
                     )
                     val mod = task.copy(
-                        status = TaskStatus.IN_PROGRESS,
                         blocker = null,
+                        status = TaskStatus.IN_PROGRESS,
                         activityHistory = task.activityHistory + newActivity,
-                        lastUpdated = "2026-08-16 12:00"
+                        lastUpdated = now
                     )
                     updatedTask = mod
                     mod
@@ -361,26 +414,20 @@ class SportsOpsRepositoryImpl(
         updatedTask?.let {
             db?.let { d -> repositoryScope.launch { d.taskDao().insertOrUpdate(it.toEntity()) } }
             firestoreManager.syncTask(it)
-            addAudit("Task", taskId, "Blocker Cleared", "${user.name} resolved blocker")
+            addAudit("Task", taskId, "Blocker Cleared", "Blocker resolved by ${user.name}")
         }
     }
 
     override fun addEvidenceToTask(taskId: String, attachment: EvidenceAttachment) {
         val user = _currentUser.value
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         var updatedTask: TaskItem? = null
         _tasks.update { list ->
             list.map { task ->
                 if (task.id == taskId) {
-                    val newActivity = TaskActivity(
-                        id = "ACT-${System.currentTimeMillis() % 10000}",
-                        user = user.name,
-                        action = "Attached evidence: ${attachment.title}",
-                        timestamp = "2026-08-16 12:00"
-                    )
                     val mod = task.copy(
                         evidenceList = task.evidenceList + attachment,
-                        activityHistory = task.activityHistory + newActivity,
-                        lastUpdated = "2026-08-16 12:00"
+                        lastUpdated = now
                     )
                     updatedTask = mod
                     mod
@@ -390,58 +437,62 @@ class SportsOpsRepositoryImpl(
         updatedTask?.let {
             db?.let { d -> repositoryScope.launch { d.taskDao().insertOrUpdate(it.toEntity()) } }
             firestoreManager.syncTask(it)
-            addAudit("Task", taskId, "Evidence Upload", "${user.name} uploaded evidence: ${attachment.title}")
+            addAudit("Task", taskId, "Evidence Attached", "${user.name} uploaded ${attachment.title}")
         }
     }
 
     override fun createOrUpdateTask(task: TaskItem) {
         val user = _currentUser.value
-        val exists = _tasks.value.any { it.id == task.id }
-        if (exists) {
-            _tasks.update { list -> list.map { if (it.id == task.id) task else it } }
-            db?.let { repositoryScope.launch { it.taskDao().insertOrUpdate(task.toEntity()) } }
-            firestoreManager.syncTask(task)
-            addAudit("Task", task.id, "Edited Task", "${user.name} updated task details: ${task.title}")
-        } else {
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+        val taskWithId = if (task.id.isBlank()) {
             val nextNum = _tasks.value.size + 1
-            val generatedId = if (task.id.isBlank() || task.id.startsWith("NEW")) "TASK-${String.format("%04d", nextNum)}" else task.id
-            val newTask = task.copy(
-                id = generatedId,
-                assignedById = user.id,
-                assignedByName = user.name,
-                dateAssigned = "2026-08-16",
-                lastUpdated = "2026-08-16 12:00",
-                activityHistory = listOf(
-                    TaskActivity("ACT-${System.currentTimeMillis() % 10000}", user.name, "Created task", "2026-08-16 12:00")
-                )
-            )
-            _tasks.update { listOf(newTask) + it }
-            db?.let { repositoryScope.launch { it.taskDao().insertOrUpdate(newTask.toEntity()) } }
-            firestoreManager.syncTask(newTask)
-            addAudit("Task", generatedId, "Created Task", "${user.name} created task: ${newTask.title}")
+            task.copy(id = "TASK-${String.format("%03d", nextNum)}", lastUpdated = now)
+        } else {
+            task.copy(lastUpdated = now)
         }
+
+        _tasks.update { list ->
+            val exists = list.any { it.id == taskWithId.id }
+            if (exists) list.map { if (it.id == taskWithId.id) taskWithId else it }
+            else listOf(taskWithId) + list
+        }
+
+        db?.let { repositoryScope.launch { it.taskDao().insertOrUpdate(taskWithId.toEntity()) } }
+        firestoreManager.syncTask(taskWithId)
+        addAudit("Task", taskWithId.id, "Saved Task", "${user.name} saved task: ${taskWithId.title}")
+    }
+
+    override fun deleteTask(taskId: String) {
+        val user = _currentUser.value
+        _tasks.update { list -> list.filterNot { it.id == taskId } }
+        db?.let { repositoryScope.launch { it.taskDao().deleteById(taskId) } }
+        firestoreManager.deleteTask(taskId)
+        addAudit("Task", taskId, "Deleted Task", "${user.name} deleted task $taskId")
     }
 
     override fun reassignTask(taskId: String, newAssigneeId: String) {
         val user = _currentUser.value
-        val member = _teamMembers.value.find { it.id == newAssigneeId } ?: return
+        val targetUser = _allUsers.value.find { it.id == newAssigneeId }
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         var updatedTask: TaskItem? = null
         _tasks.update { list ->
             list.map { task ->
                 if (task.id == taskId) {
-                    val prev = task.teamMemberName
+                    val prevName = task.teamMemberName
+                    val newName = targetUser?.name ?: newAssigneeId
                     val newActivity = TaskActivity(
                         id = "ACT-${System.currentTimeMillis() % 10000}",
                         user = user.name,
-                        action = "Reassigned task from $prev to ${member.name}",
-                        timestamp = "2026-08-16 12:00"
+                        action = "Reassigned from $prevName to $newName",
+                        timestamp = now,
+                        previousValue = prevName,
+                        newValue = newName
                     )
                     val mod = task.copy(
-                        teamMemberId = member.id,
-                        teamMemberName = member.name,
-                        vertical = member.vertical,
+                        teamMemberId = newAssigneeId,
+                        teamMemberName = newName,
                         activityHistory = task.activityHistory + newActivity,
-                        lastUpdated = "2026-08-16 12:00"
+                        lastUpdated = now
                     )
                     updatedTask = mod
                     mod
@@ -451,7 +502,7 @@ class SportsOpsRepositoryImpl(
         updatedTask?.let {
             db?.let { d -> repositoryScope.launch { d.taskDao().insertOrUpdate(it.toEntity()) } }
             firestoreManager.syncTask(it)
-            addAudit("Task", taskId, "Reassigned", "${user.name} reassigned task to ${member.name}")
+            addAudit("Task", taskId, "Reassigned", "${user.name} reassigned to ${targetUser?.name ?: newAssigneeId}")
         }
     }
 
@@ -459,48 +510,44 @@ class SportsOpsRepositoryImpl(
         val user = _currentUser.value
         var updatedEvent: SportsEvent? = null
         _events.update { list ->
-            list.map { event ->
-                if (event.id == eventId) {
-                    val mod = event.copy(currentStage = newStage)
+            list.map { ev ->
+                if (ev.id == eventId) {
+                    val mod = ev.copy(currentStage = newStage)
                     updatedEvent = mod
                     mod
-                } else event
+                } else ev
             }
         }
         updatedEvent?.let {
             db?.let { d -> repositoryScope.launch { d.eventDao().insertOrUpdate(it.toEntity()) } }
             firestoreManager.syncEvent(it)
-            addAudit("Event", eventId, "Stage Changed", "${user.name} transitioned stage to ${newStage.displayName}")
+            addAudit("Event", eventId, "Stage Transition", "${user.name} advanced stage to ${newStage.order}: ${newStage.displayName}")
         }
     }
 
     override fun createOrUpdateEvent(event: SportsEvent) {
         val user = _currentUser.value
-        val exists = _events.value.any { it.id == event.id }
-        if (exists) {
-            _events.update { list -> list.map { if (it.id == event.id) event else it } }
-            db?.let { repositoryScope.launch { it.eventDao().insertOrUpdate(event.toEntity()) } }
-            firestoreManager.syncEvent(event)
-            addAudit("Event", event.id, "Updated Event", "${user.name} modified event: ${event.name}")
-        } else {
+        val eventWithId = if (event.id.isBlank()) {
             val nextNum = _events.value.size + 1
-            val generatedId = if (event.id.isBlank() || event.id.startsWith("NEW")) "E${String.format("%02d", nextNum)}" else event.id
-            val newEvent = event.copy(id = generatedId)
-            _events.update { it + newEvent }
-            val newReqs = SportsOpsSeedData.generateRequirementsForEvent(generatedId)
-            _readinessRequirements.update { it + newReqs }
+            event.copy(id = "EVT-${String.format("%03d", nextNum)}")
+        } else event
 
-            db?.let {
-                repositoryScope.launch {
-                    it.eventDao().insertOrUpdate(newEvent.toEntity())
-                    it.readinessDao().insertAll(newReqs.map { r -> r.toEntity() })
-                }
-            }
-            firestoreManager.syncEvent(newEvent)
-            newReqs.forEach { firestoreManager.syncRequirement(it) }
-
-            addAudit("Event", generatedId, "Created Event", "${user.name} created event: ${newEvent.name}")
+        _events.update { list ->
+            val exists = list.any { it.id == eventWithId.id }
+            if (exists) list.map { if (it.id == eventWithId.id) eventWithId else it }
+            else listOf(eventWithId) + list
         }
+        db?.let { repositoryScope.launch { it.eventDao().insertOrUpdate(eventWithId.toEntity()) } }
+        firestoreManager.syncEvent(eventWithId)
+        addAudit("Event", eventWithId.id, "Saved Event", "${user.name} updated event details for ${eventWithId.name}")
+    }
+
+    override fun deleteEvent(eventId: String) {
+        val user = _currentUser.value
+        _events.update { list -> list.filterNot { it.id == eventId } }
+        db?.let { repositoryScope.launch { it.eventDao().deleteById(eventId) } }
+        firestoreManager.deleteEvent(eventId)
+        addAudit("Event", eventId, "Deleted Event", "${user.name} deleted event $eventId")
     }
 
     override fun updateRequirementStatus(
@@ -511,67 +558,44 @@ class SportsOpsRepositoryImpl(
         notes: String?
     ) {
         val user = _currentUser.value
-        var targetEventId = ""
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         var updatedReq: EventReadinessRequirement? = null
         _readinessRequirements.update { list ->
             list.map { req ->
                 if (req.id == reqId) {
-                    targetEventId = req.eventId
                     val mod = req.copy(
                         pocStatus = pocState ?: req.pocStatus,
                         coordinatorStatus = coordState ?: req.coordinatorStatus,
                         coreStatus = coreState ?: req.coreStatus,
                         notes = notes ?: req.notes,
-                        lastUpdated = "2026-08-16 12:00"
+                        lastUpdated = now
                     )
                     updatedReq = mod
                     mod
                 } else req
             }
         }
-
         updatedReq?.let {
             db?.let { d -> repositoryScope.launch { d.readinessDao().insertOrUpdate(it.toEntity()) } }
             firestoreManager.syncRequirement(it)
+            addAudit("Readiness", reqId, "Requirement Sign-off", "${user.name} updated readiness status for ${it.title}")
         }
-
-        // Recalculate event readiness
-        if (targetEventId.isNotBlank()) {
-            val allReqs = _readinessRequirements.value
-            val summary = SportsOpsLogic.calculateEventReadiness(targetEventId, allReqs)
-            _events.update { list ->
-                list.map { event ->
-                    if (event.id == targetEventId) {
-                        val mod = event.copy(readinessPercent = summary.overallPercent)
-                        db?.let { d -> repositoryScope.launch { d.eventDao().insertOrUpdate(mod.toEntity()) } }
-                        firestoreManager.syncEvent(mod)
-                        mod
-                    } else event
-                }
-            }
-        }
-        addAudit("Readiness", reqId, "Requirement Updated", "${user.name} updated requirement $reqId")
     }
 
     override fun createIssue(issue: IssueItem) {
         val user = _currentUser.value
         val nextNum = _issues.value.size + 1
-        val generatedId = if (issue.id.isBlank() || issue.id.startsWith("NEW")) "ISS-${String.format("%03d", nextNum)}" else issue.id
-        val newIssue = issue.copy(
-            id = generatedId,
-            raisedById = user.id,
-            raisedByName = user.name,
-            dateRaised = "2026-08-16",
-            lastUpdated = "2026-08-16 12:00"
-        )
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+        val newIssue = if (issue.id.isBlank()) issue.copy(id = "ISSUE-${String.format("%03d", nextNum)}", lastUpdated = now) else issue.copy(lastUpdated = now)
         _issues.update { listOf(newIssue) + it }
         db?.let { repositoryScope.launch { it.issueDao().insertOrUpdate(newIssue.toEntity()) } }
         firestoreManager.syncIssue(newIssue)
-        addAudit("Issue", generatedId, "Created Issue", "${user.name} logged issue: ${newIssue.problem} (${newIssue.severity.displayName})")
+        addAudit("Issue", newIssue.id, "Logged Issue", "${user.name} logged ${newIssue.severity.displayName} issue: ${newIssue.problem}")
     }
 
     override fun updateIssueStatus(issueId: String, newStatus: IssueStatus, resolution: String?) {
         val user = _currentUser.value
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         var updatedIssue: IssueItem? = null
         _issues.update { list ->
             list.map { issue ->
@@ -579,8 +603,8 @@ class SportsOpsRepositoryImpl(
                     val mod = issue.copy(
                         status = newStatus,
                         resolution = resolution ?: issue.resolution,
-                        resolutionDate = if (newStatus == IssueStatus.RESOLVED || newStatus == IssueStatus.CLOSED) "2026-08-16" else issue.resolutionDate,
-                        lastUpdated = "2026-08-16 12:00"
+                        resolutionDate = if (newStatus == IssueStatus.RESOLVED || newStatus == IssueStatus.CLOSED) now.substringBefore(" ") else issue.resolutionDate,
+                        lastUpdated = now
                     )
                     updatedIssue = mod
                     mod
@@ -590,29 +614,30 @@ class SportsOpsRepositoryImpl(
         updatedIssue?.let {
             db?.let { d -> repositoryScope.launch { d.issueDao().insertOrUpdate(it.toEntity()) } }
             firestoreManager.syncIssue(it)
-            addAudit("Issue", issueId, "Status Update", "${user.name} marked issue $issueId as ${newStatus.displayName}")
+            addAudit("Issue", issueId, "Status Update", "${user.name} marked issue as ${newStatus.displayName}")
         }
     }
 
     override fun escalateIssue(issueId: String, targetUserId: String, reason: String) {
         val user = _currentUser.value
-        val target = _teamMembers.value.find { it.id == targetUserId } ?: return
+        val target = _allUsers.value.find { it.id == targetUserId }
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         var updatedIssue: IssueItem? = null
         _issues.update { list ->
             list.map { issue ->
                 if (issue.id == issueId) {
-                    val step = EscalationHistoryEntry(
-                        fromUser = user.name,
-                        toUser = target.name,
-                        timestamp = "2026-08-16 12:00",
-                        reason = reason
-                    )
+                    val nextLevel = when (issue.escalationLevel) {
+                        EscalationLevel.L1_VOLUNTEER_COORDINATOR -> EscalationLevel.L2_SUPER_COORDINATOR
+                        EscalationLevel.L2_SUPER_COORDINATOR -> EscalationLevel.L3_DEPUTY_CORE
+                        EscalationLevel.L3_DEPUTY_CORE -> EscalationLevel.L4_CORE
+                        EscalationLevel.L4_CORE -> EscalationLevel.L4_CORE
+                    }
                     val mod = issue.copy(
-                        escalatedToId = target.id,
-                        escalatedToName = target.name,
-                        status = IssueStatus.UNDER_REVIEW,
-                        escalationHistory = issue.escalationHistory + step,
-                        lastUpdated = "2026-08-16 12:00"
+                        escalationLevel = nextLevel,
+                        escalatedToId = targetUserId,
+                        escalatedToName = target?.name ?: targetUserId,
+                        remarks = "${issue.remarks}\n[${now}] Escalated by ${user.name}: $reason",
+                        lastUpdated = now
                     )
                     updatedIssue = mod
                     mod
@@ -622,19 +647,20 @@ class SportsOpsRepositoryImpl(
         updatedIssue?.let {
             db?.let { d -> repositoryScope.launch { d.issueDao().insertOrUpdate(it.toEntity()) } }
             firestoreManager.syncIssue(it)
-            addAudit("Issue", issueId, "Escalated", "${user.name} escalated $issueId to ${target.name}: $reason")
+            addAudit("Issue", issueId, "Escalation", "Escalated to ${target?.name ?: targetUserId} (${it.escalationLevel.displayName}): $reason")
         }
     }
 
     override fun addEvidenceToIssue(issueId: String, attachment: EvidenceAttachment) {
         val user = _currentUser.value
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         var updatedIssue: IssueItem? = null
         _issues.update { list ->
             list.map { issue ->
                 if (issue.id == issueId) {
                     val mod = issue.copy(
                         evidenceList = issue.evidenceList + attachment,
-                        lastUpdated = "2026-08-16 12:00"
+                        lastUpdated = now
                     )
                     updatedIssue = mod
                     mod
@@ -648,11 +674,20 @@ class SportsOpsRepositoryImpl(
         }
     }
 
+    override fun deleteIssue(issueId: String) {
+        val user = _currentUser.value
+        _issues.update { list -> list.filterNot { it.id == issueId } }
+        db?.let { repositoryScope.launch { it.issueDao().deleteById(issueId) } }
+        firestoreManager.deleteIssue(issueId)
+        addAudit("Issue", issueId, "Deleted Issue", "${user.name} deleted issue $issueId")
+    }
+
     override fun submitProposalReview(review: ProposalReview) {
         val user = _currentUser.value
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         val submitted = review.copy(
             isSubmitted = true,
-            submittedAt = "2026-08-16 12:00"
+            submittedAt = now
         )
         _proposalReviews.update { list ->
             val filtered = list.filterNot { it.id == review.id }
@@ -665,6 +700,7 @@ class SportsOpsRepositoryImpl(
 
     override fun handleApprovalAction(approvalId: String, action: CoreApprovalStatus, remark: String) {
         val user = _currentUser.value
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         var updatedApp: ApprovalItem? = null
         _approvals.update { list ->
             list.map { app ->
@@ -673,7 +709,7 @@ class SportsOpsRepositoryImpl(
                         status = action,
                         remarks = remark,
                         decidedBy = user.name,
-                        decidedAt = "2026-08-16 12:00"
+                        decidedAt = now
                     )
                     updatedApp = mod
                     mod
@@ -687,6 +723,13 @@ class SportsOpsRepositoryImpl(
         }
     }
 
+    override fun deleteApproval(approvalId: String) {
+        val user = _currentUser.value
+        _approvals.update { list -> list.filterNot { it.id == approvalId } }
+        db?.let { repositoryScope.launch { it.approvalDao().deleteById(approvalId) } }
+        addAudit("Approval", approvalId, "Deleted Approval", "${user.name} deleted approval item $approvalId")
+    }
+
     override fun addCalendarItem(item: CalendarItem) {
         val user = _currentUser.value
         val nextNum = _calendarItems.value.size + 1
@@ -696,6 +739,14 @@ class SportsOpsRepositoryImpl(
         db?.let { repositoryScope.launch { it.calendarDao().insertOrUpdate(newItem.toEntity()) } }
         firestoreManager.syncCalendarItem(newItem)
         addAudit("Calendar", genId, "Created Milestone", "${user.name} added calendar item: ${newItem.activity}")
+    }
+
+    override fun deleteCalendarItem(calendarId: String) {
+        val user = _currentUser.value
+        _calendarItems.update { list -> list.filterNot { it.id == calendarId } }
+        db?.let { repositoryScope.launch { it.calendarDao().deleteById(calendarId) } }
+        firestoreManager.deleteCalendarItem(calendarId)
+        addAudit("Calendar", calendarId, "Deleted Milestone", "${user.name} deleted calendar item $calendarId")
     }
 
     override fun markNotificationAsRead(notificationId: String) {
@@ -720,6 +771,43 @@ class SportsOpsRepositoryImpl(
             calendar = _calendarItems.value,
             team = _teamMembers.value,
             readinessSummaries = readinessMap
+        )
+    }
+
+    override fun clearAllData() {
+        _tasks.value = emptyList()
+        _events.value = emptyList()
+        _readinessRequirements.value = emptyList()
+        _issues.value = emptyList()
+        _calendarItems.value = emptyList()
+        _approvals.value = emptyList()
+        _proposalReviews.value = emptyList()
+        _auditLogs.value = emptyList()
+
+        db?.let {
+            repositoryScope.launch {
+                it.taskDao().deleteAll()
+                it.eventDao().deleteAll()
+                it.readinessDao().deleteAll()
+                it.issueDao().deleteAll()
+                it.calendarDao().deleteAll()
+                it.approvalDao().deleteAll()
+                it.proposalReviewDao().deleteAll()
+                it.auditLogDao().deleteAll()
+            }
+        }
+    }
+
+    override suspend fun seedOperationalFrameworkToFirestore(): Result<Int> {
+        return firestoreManager.seedAllToFirestore(
+            tasks = SportsOpsSeedData.tasks,
+            events = SportsOpsSeedData.events,
+            readiness = SportsOpsSeedData.readinessRequirements,
+            issues = SportsOpsSeedData.issues,
+            calendar = SportsOpsSeedData.calendarItems,
+            approvals = SportsOpsSeedData.approvals,
+            proposals = SportsOpsSeedData.proposalReviews,
+            auditLogs = SportsOpsSeedData.auditLogs
         )
     }
 

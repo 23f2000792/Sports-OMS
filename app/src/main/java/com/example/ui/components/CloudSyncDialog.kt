@@ -47,8 +47,8 @@ fun CloudSyncDialog(
     ) {
         Card(
             modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .fillMaxHeight(0.85f),
+                .fillMaxWidth(0.94f)
+                .fillMaxHeight(0.88f),
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
@@ -81,13 +81,13 @@ fun CloudSyncDialog(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Cloud Backend & Sync",
+                                text = "Firebase Studio & Cloud Console",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "Firebase Firestore Realtime Engine",
+                                text = "Live Firebase Cloud Firestore Connection",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -186,50 +186,81 @@ fun CloudSyncDialog(
                         }
                     }
 
-                    // System Architecture Specs Card
+                    // Live Operational Data Collections Card
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
                             Text(
-                                text = "Operational Data Sync State",
+                                text = "Live Firebase Collections",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Spacer(modifier = Modifier.height(8.dp))
 
-                            SyncStatRow(label = "Active Tasks in Scope", count = tasks.size.toString(), collection = "sports_tasks")
-                            SyncStatRow(label = "Inter-College Events", count = events.size.toString(), collection = "sports_events")
-                            SyncStatRow(label = "Readiness Requirements", count = readiness.size.toString(), collection = "sports_readiness")
-                            SyncStatRow(label = "Raised Issues & Blockers", count = issues.size.toString(), collection = "sports_issues")
-                            SyncStatRow(label = "Master Schedule Milestones", count = calendar.size.toString(), collection = "sports_calendar")
-                            SyncStatRow(label = "Pending Core Approvals", count = approvals.size.toString(), collection = "sports_approvals")
+                            SyncStatRow(label = "Tasks", count = tasks.size.toString(), collection = "sports_tasks")
+                            SyncStatRow(label = "Events", count = events.size.toString(), collection = "sports_events")
+                            SyncStatRow(label = "Readiness Checklists", count = readiness.size.toString(), collection = "sports_readiness")
+                            SyncStatRow(label = "Issues & Blockers", count = issues.size.toString(), collection = "sports_issues")
+                            SyncStatRow(label = "Calendar Milestones", count = calendar.size.toString(), collection = "sports_calendar")
+                            SyncStatRow(label = "Approvals", count = approvals.size.toString(), collection = "sports_approvals")
                         }
                     }
 
-                    // Architecture Highlights
+                    // Setup / Seed Framework Button
                     Card(
                         colors = CardDefaults.cardColors(containerColor = SportsNavyDark.copy(alpha = 0.05f)),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
                             Text(
-                                text = "Dual-Layer Resilience",
+                                text = "Initialize Sports Department Framework",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
                                 color = SportsNavyDark
                             )
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "• Local Room SQLite cache guarantees instant response time, offline operation, and reliable persistence.\n" +
-                                       "• Firebase Cloud Firestore automatically synchronizes updates in real-time across devices, committee leads, and coordinators.",
+                                text = "Push the official 16 inter-college sports events, 7-phase venue readiness matrices, and operational workflows directly into your Firebase Studio Console.",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 lineHeight = 16.sp
                             )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            FilledTonalButton(
+                                onClick = {
+                                    viewModel.seedOperationalFrameworkToFirestore { success, msg ->
+                                        isSuccess = success
+                                        statusMessage = msg
+                                    }
+                                },
+                                enabled = !isSyncing,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Push Framework to Firebase Console", fontSize = 12.sp)
+                            }
                         }
+                    }
+
+                    // Clear Mock Data Button
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.clearAllData()
+                            statusMessage = "Cleared local mock data. Live Firebase documents will display in real time."
+                            isSuccess = true
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = SportsCrimsonDanger),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Purge Local Mock Cache", fontSize = 12.sp)
                     }
                 }
 
@@ -267,11 +298,11 @@ fun CloudSyncDialog(
                                 strokeWidth = 2.dp
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Pushing...", fontSize = 13.sp)
+                            Text("Syncing...", fontSize = 13.sp)
                         } else {
-                            Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Push to Cloud", fontSize = 13.sp)
+                            Text("Sync with Firestore", fontSize = 13.sp)
                         }
                     }
                 }

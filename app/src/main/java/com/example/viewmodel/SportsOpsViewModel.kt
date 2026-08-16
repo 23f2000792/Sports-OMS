@@ -51,6 +51,7 @@ class SportsOpsViewModel(
     val notifications = repository.notifications
     val auditLogs = repository.auditLogs
     val cloudSyncSummary = repository.cloudSyncSummary
+    val isAuthenticated = repository.isAuthenticated
 
     private val _isSyncingCloud = MutableStateFlow(false)
     val isSyncingCloud = _isSyncingCloud.asStateFlow()
@@ -334,6 +335,59 @@ class SportsOpsViewModel(
 
     fun addCalendarItem(item: CalendarItem) {
         repository.addCalendarItem(item)
+    }
+
+    fun deleteTask(taskId: String) {
+        repository.deleteTask(taskId)
+    }
+
+    fun deleteEvent(eventId: String) {
+        repository.deleteEvent(eventId)
+    }
+
+    fun deleteIssue(issueId: String) {
+        repository.deleteIssue(issueId)
+    }
+
+    fun deleteCalendarItem(calendarId: String) {
+        repository.deleteCalendarItem(calendarId)
+    }
+
+    fun deleteApproval(approvalId: String) {
+        repository.deleteApproval(approvalId)
+    }
+
+    fun clearAllData() {
+        repository.clearAllData()
+    }
+
+    fun seedOperationalFrameworkToFirestore(onComplete: (Boolean, String) -> Unit = { _, _ -> }) {
+        viewModelScope.launch {
+            _isSyncingCloud.value = true
+            val result = repository.seedOperationalFrameworkToFirestore()
+            _isSyncingCloud.value = false
+            if (result.isSuccess) {
+                onComplete(true, "Successfully initialized ${result.getOrNull()} items into Firebase Studio Console!")
+            } else {
+                onComplete(false, result.exceptionOrNull()?.message ?: "Failed to seed operational framework")
+            }
+        }
+    }
+
+    fun login(user: CurrentUser) {
+        repository.login(user)
+    }
+
+    fun loginWithCustomProfile(name: String, email: String, role: UserRole, vertical: String, phone: String) {
+        repository.loginWithCustomProfile(name, email, role, vertical, phone)
+    }
+
+    fun registerNewTeamMember(member: TeamMember) {
+        repository.registerNewTeamMember(member)
+    }
+
+    fun logout() {
+        repository.logout()
     }
 
     fun markNotificationAsRead(id: String) {

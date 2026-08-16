@@ -31,6 +31,7 @@ import com.example.ui.theme.SportsOpsTheme
 import com.example.viewmodel.SportsOpsViewModel
 
 sealed class Screen(val route: String, val title: String, val icon: ImageVector) {
+    object Auth : Screen("auth", "Sign In", Icons.Default.Lock)
     object Home : Screen("home", "Dashboard", Icons.Default.Dashboard)
     object Tasks : Screen("tasks", "Tasks", Icons.Default.Assignment)
     object Events : Screen("events", "Events", Icons.Default.EmojiEvents)
@@ -72,6 +73,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun MainApp(viewModel: SportsOpsViewModel) {
+    val isAuthenticated by viewModel.isAuthenticated.collectAsState()
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
@@ -83,6 +85,16 @@ fun MainApp(viewModel: SportsOpsViewModel) {
     var showUserSwitchDialog by remember { mutableStateOf(false) }
     var showGlobalSearchDialog by remember { mutableStateOf(false) }
     var showCloudSyncDialog by remember { mutableStateOf(false) }
+
+    if (!isAuthenticated) {
+        AuthScreen(
+            viewModel = viewModel,
+            onLoginSuccess = {
+                // Session updated, state automatically transitions to Main UI
+            }
+        )
+        return
+    }
 
     val bottomNavItems = listOf(
         Screen.Home,
